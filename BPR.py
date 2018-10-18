@@ -1,7 +1,7 @@
 '''
 BPR
-@author: ZTY
-@created: 7/18/2018
+@author: Tianyu Zhu
+@created: 12/9/2018
 '''
 
 import numpy as np
@@ -36,20 +36,12 @@ class BPR(object):
         self.i_b = tf.nn.embedding_lookup(self.b_i, self.i)
         self.j_b = tf.nn.embedding_lookup(self.b_i, self.j)
 
+        self.score_ui = tf.reduce_sum(self.u_emb * self.i_emb, 1, True) + self.i_b
+        self.score_uj = tf.reduce_sum(self.u_emb * self.j_emb, 1, True) + self.j_b
+
         self.regularization = tf.nn.l2_loss(self.W_u) + tf.nn.l2_loss(self.W_i) + tf.nn.l2_loss(self.b_i)
-        self.loss = -tf.reduce_mean(tf.log_sigmoid(tf.reduce_sum(self.u_emb * (self.i_emb - self.j_emb), 1, True) + self.i_b - self.j_b)) + self.reg_rate * self.regularization
+        self.loss = -tf.reduce_mean(tf.log_sigmoid(self.score_ui - self.score_uj)) + self.reg_rate * self.regularization
         self.train_op = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
-
-        with tf.name_scope("test"):
-            self.test_u = tf.placeholder(tf.int32, [None], name="test_uid")
-            self.test_i = tf.placeholder(tf.int32, [None], name="test_iid")
-
-            self.test_u_emb = tf.nn.embedding_lookup(self.W_u, self.test_u)
-            self.test_i_emb = tf.nn.embedding_lookup(self.W_i, self.test_i)
-            self.test_i_b = tf.nn.embedding_lookup(self.b_i, self.test_i)
-
-            self.score = tf.reshape(tf.reduce_sum(self.test_u_emb * self.test_i_emb, 1, True) + self.test_i_b, [-1])
-            self.rank_list = tf.nn.top_k(self.score, 100)[1]
 
         print("model prepared...")
 
@@ -85,14 +77,14 @@ def generate_test_data(test_dict, negative_dict):
 
 
 if __name__ == '__main__':
-    dataset = ''
+    dataset = 'ml_100k'
     # Model hyperparameters
     num_factor = 8
-    reg_rate = 0
+    reg_rate = 1e-6
     num_neg_sample = 1
     # Training parameters
     batch_size = 256
-    num_epoch = 30
+    num_epoch = 20
     lr = 1e-3
     random_seed = 2018
 
@@ -101,10 +93,12 @@ if __name__ == '__main__':
         np.random.seed(random_seed)
         tf.set_random_seed(random_seed)
 
-        num_user, num_item, trust_dict, train_dict, validate_dict, test_dict, negative_dict = load_data(''.format(dataset=dataset))
+        num_user, num_item, train_dict, validate_dict, test_dict, negative_dict = load_data('data/{dataset}/train_data.csv'.format(dataset=dataset),
+                                                                                            'data/{dataset}/validate_data.csv'.format(dataset=dataset),
+                                                                                            'data/{dataset}/test_data.csv'.format(dataset=dataset),
+                                                                                            'data/{dataset}/negative_data.csv'.format(dataset=dataset))
         model = BPR(num_user, num_item, num_factor, reg_rate, lr)
         sess.run(tf.global_variables_initializer())
-        #train_data = generate_train_data(train_dict, validate_dict, test_dict, num_item, num_neg_sample)
         validate_data = generate_test_data(validate_dict, negative_dict)
         test_data = generate_test_data(test_dict, negative_dict)
 
@@ -119,18 +113,21 @@ if __name__ == '__main__':
                 train_loss.append(batch_loss)
             train_loss = sum(train_loss) / len(train_data)
 
+
             rank_list = []
             for line in validate_data:
-                rank_u = sess.run(model.rank_list, feed_dict={model.test_u: np.asarray([line[0] for _ in range(100)]), model.test_i: line[1]})
-                rank_list.append(rank_u.tolist())
+                r_hat = sess.run(model.score_ui, feed_dict={model.u: np.asarray([line[0] for _ in range(100)]), model.i: line[1]})
+                rank_u = np.reshape(r_hat, -1).argsort()[::-1].tolist()
+                rank_list.append(rank_u)
             validate_hr, validate_ndcg = evaluate(rank_list, 0, 10)
             print("train loss:", train_loss, "validate hit ratio:", validate_hr, "validate ndcg:", validate_ndcg)
             result.append([epoch, train_loss, validate_hr, validate_ndcg])
 
         rank_list = []
         for line in test_data:
-            rank_u = sess.run(model.rank_list, feed_dict={model.test_u: np.asarray([line[0] for _ in range(100)]), model.test_i: line[1]})
-            rank_list.append(rank_u.tolist())
+            r_hat = sess.run(model.score_ui, feed_dict={model.u: np.asarray([line[0] for _ in range(100)]), model.i: line[1]})
+            rank_u = np.reshape(r_hat, -1).argsort()[::-1].tolist()
+            rank_list.append(rank_u)
         test_hr5, test_ndcg5 = evaluate(rank_list, 0, 5)
         test_hr10, test_ndcg10 = evaluate(rank_list, 0, 10)
         test_hr20, test_ndcg20 = evaluate(rank_list, 0, 20)
